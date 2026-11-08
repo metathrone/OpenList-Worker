@@ -1,0 +1,84 @@
+name: Auto Update & Deploy to Cloudflare Worker
+
+on:
+  schedule:
+    # 每天 02:00 UTC (北京时间 10:00) 定时检查上游更新
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'src/**'
+      - 'scripts/**'
+      - 'wrangler.jsonc'
+      - 'package.json'
+      - '.github/workflows/auto-update.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  update-and-deploy:
+    name: Build & Deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Sync with Upstream
+        id: sync
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/OpenListTeam/OpenList-Worker.git 2>/dev/null || true
+          git fetch upstream main
+
+          # 备份我们的自定义配置 (wrangler.jsonc 和工作流)
+          cp wrangler.jsonc /tmp/wrangler.jsonc.custom
+
+          # 检查上游是否有新提交
+          UPSTREAM_DIFF=$(git rev-list HEAD..upstream/main --count)
+          echo "Upstream commits ahead: $UPSTREAM_DIFF"
+
+          if [ "$UPSTREAM_DIFF" -gt 0 ]; then
+            echo "Merging upstream changes..."
+            git merge upstream/main --no-edit || {
+              echo "Merge conflict, restoring custom config..."
+              git checkout --ours wrangler.jsonc .github/workflows/ || true
+              git add -A
+              git commit -m "chore: resolve merge conflicts with upstream" || true
+            }
+            # 确保自定义的数据库和域名配置不被覆盖
+            cp /tmp/wrangler.jsonc.custom wrangler.jsonc
+            git add wrangler.jsonc
+            git commit -m "chore: keep custom D1 & domain config [skip ci]" || true
+            git push origin main
+          else
+            echo "Already up to date with upstream."
+          fi
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Install Dependencies
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Build Project & Fetch Frontend
+        run: npm run build
+
+      - name: Deploy to Cloudflare Worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          npx wrangler deploy
