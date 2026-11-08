@@ -2,7 +2,7 @@ name: Auto Update & Deploy to Cloudflare Worker
 
 on:
   schedule:
-    # 每天 02:00 UTC (北京时间 10:00) 定时检查上游更新
+    # 每天 02:00 UTC (北京时间 10:00) 自动检查上游更新
     - cron: '0 2 * * *'
   workflow_dispatch:
   push:
@@ -36,7 +36,7 @@ jobs:
           git remote add upstream https://github.com/OpenListTeam/OpenList-Worker.git 2>/dev/null || true
           git fetch upstream main
 
-          # 备份我们的自定义配置 (wrangler.jsonc 和工作流)
+          # 备份我们的自定义配置 (wrangler.jsonc)
           cp wrangler.jsonc /tmp/wrangler.jsonc.custom
 
           # 检查上游是否有新提交
@@ -60,15 +60,14 @@ jobs:
             echo "Already up to date with upstream."
           fi
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 9
+          cache: pnpm
 
       - name: Install Dependencies
         run: pnpm install --no-frozen-lockfile
