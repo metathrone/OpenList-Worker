@@ -1008,28 +1008,57 @@ async function createDriver(
     normDriver.includes("139")
   ) {
     const addition = parseAddition(storageConfig)
-    driver = new Yun139Driver(addition, async (authorization) => {
-      try {
-        const db = await getDb()
-        const st = (db.storages || []).find(
-          (s: any) => s.id === storageConfig?.id,
-        )
-        if (!st) return
-        const stAddition =
-          typeof st.addition === "string"
-            ? JSON.parse(st.addition || "{}")
-            : st.addition || {}
-        stAddition.authorization = authorization
-        st.addition = JSON.stringify(stAddition)
-        // Keep the in-flight admin update object in sync so it cannot overwrite
-        // the newly refreshed authorization with the previous value.
-        storageConfig.addition = st.addition
-        if (deferredTokenPersistence.has(storageConfig)) return
-        await saveDb(db)
-      } catch (e) {
-        console.warn("[139] failed to persist refreshed authorization:", e)
-      }
-    })
+    driver = new Yun139Driver(
+      addition,
+      async (authorization) => {
+        try {
+          const db = await getDb()
+          const st = (db.storages || []).find(
+            (s: any) => s.id === storageConfig?.id,
+          )
+          if (!st) return
+          const stAddition =
+            typeof st.addition === "string"
+              ? JSON.parse(st.addition || "{}")
+              : st.addition || {}
+          stAddition.authorization = authorization
+          st.addition = JSON.stringify(stAddition)
+          // Keep the in-flight admin update object in sync so it cannot overwrite
+          // the newly refreshed authorization with the previous value.
+          storageConfig.addition = st.addition
+          if (deferredTokenPersistence.has(storageConfig)) return
+          await saveDb(db)
+        } catch (e) {
+          console.warn("[139] failed to persist refreshed authorization:", e)
+        }
+      },
+      async (state) => {
+        try {
+          const db = await getDb()
+          const st = (db.storages || []).find(
+            (s: any) => s.id === storageConfig?.id,
+          )
+          if (!st) return
+          const stAddition =
+            typeof st.addition === "string"
+              ? JSON.parse(st.addition || "{}")
+              : st.addition || {}
+          if (state.authorization)
+            stAddition.authorization = state.authorization
+          if (state.userDomainId) {
+            stAddition.user_domain_id = state.userDomainId
+          }
+          stAddition.mail_cookies = state.mailCookies
+          stAddition.sms_code = state.smsCode
+          st.addition = JSON.stringify(stAddition)
+          storageConfig.addition = st.addition
+          if (deferredTokenPersistence.has(storageConfig)) return
+          await saveDb(db)
+        } catch (e) {
+          console.warn("[139] failed to persist login state:", e)
+        }
+      },
+    )
     await driver.init?.()
   } else if (
     normDriver === "mega" ||
@@ -1212,6 +1241,17 @@ async function createDriver(
         // captcha_token/send_code 等），空串用于显式清除一次性字段
         Object.assign(stAddition, changes)
         st.addition = JSON.stringify(stAddition)
+        // 把驱动回写同步给 in-flight 的 updatedStorage：/admin/storage/update 会用
+        // updatedStorage 覆盖 db，若不同步，驱动刚写入的登录态（verification_id 等）
+        // 会被提交前的旧快照覆盖。这里以本次提交的 addition 为基底叠加驱动改动，
+        // 既保留登录态，也不会把用户本次编辑的其它配置项回退成旧值。
+        if (deferredTokenPersistence.has(storageConfig)) {
+          storageConfig.addition = JSON.stringify({
+            ...parseAddition(storageConfig),
+            ...changes,
+          })
+          return
+        }
         await saveDb(db)
       } catch (e) {
         console.warn("[GuangYaPan] failed to persist changes:", e)
